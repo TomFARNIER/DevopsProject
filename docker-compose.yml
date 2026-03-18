@@ -1,0 +1,183 @@
+services:
+  # --- REVERSE PROXY ---
+  proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    labels:
+      - "com.github.nginx-proxy.nginx"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./data/proxy/certs:/etc/nginx/certs:ro
+      - ./data/proxy/vhost:/etc/nginx/vhost.d:ro
+      - ./data/proxy/html:/usr/share/nginx/html:ro
+    networks:
+      - public
+    restart: always
+
+  # --- SSL COMPANION ---
+  ssl-helper:
+    image: nginxproxy/acme-companion
+    container_name: nginx-proxy-acme
+    environment:
+      - TRUST_DOWNSTREAM_PROXY=true
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+      - DEFAULT_EMAIL=${MY_EMAIL}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/proxy/certs:/etc/nginx/certs:rw
+      - ./data/proxy/vhost:/etc/nginx/vhost.d:rw
+      - ./data/proxy/html:/usr/share/nginx/html:rw
+      - ./data/proxy/acme:/etc/acme.sh
+    networks:
+      - public
+    depends_on:
+      - proxy
+    restart: always
+
+  # --- DOZZLE (LOGS) ---
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: dozzle
+    environment:
+      - VIRTUAL_HOST=${DOZZLE_DOMAIN}
+      - LETSENCRYPT_HOST=${DOZZLE_DOMAIN}
+      - LETSENCRYPT_EMAIL=${MY_EMAIL}
+      - VIRTUAL_PORT=8080
+      - DOZZLE_ENABLE_ACTIONS=true
+      - DOZZLE_AUTH_PROVIDER=simple
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/dozzle/users.yml:/data/users.yml:ro
+    networks:
+      - public
+    restart: always
+
+  # --- N8N ---
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    environment:
+      - VIRTUAL_HOST=${N8N_DOMAIN}
+      - LETSENCRYPT_HOST=${N8N_DOMAIN}
+      - LETSENCRYPT_EMAIL=${MY_EMAIL}
+      - VIRTUAL_PORT=5678
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+    networks:
+      - public
+    restart: always
+
+  # --- WORDPRESS ---
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    environment:
+      - VIRTUAL_HOST=${WORDPRESS_DOMAIN}
+      - LETSENCRYPT_HOST=${WORDPRESS_DOMAIN}
+      - LETSENCRYPT_EMAIL=${MY_EMAIL}
+      - WORDPRESS_DB_HOST=${WP_DB_HOST}:${WP_DB_PORT}
+      - WORDPRESS_DB_USER=${WP_DB_USER}
+      - WORDPRESS_DB_PASSWORD=${WP_DB_PASSWORD}
+      - WORDPRESS_DB_NAME=${WP_DB_NAME}
+    volumes:
+      - ./data/wp:/var/www/html
+    depends_on:
+      db-wp:
+        condition: service_healthy
+    networks:
+      - public
+      - net-wp-db
+    restart: always
+
+  db-wp:
+    image: mysql:8.0
+    container_name: db-wp
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --default-authentication-plugin=mysql_native_password
+    environment:
+      - MYSQL_DATABASE=${WP_DB_NAME}
+      - MYSQL_USER=${WP_DB_USER}
+      - MYSQL_PASSWORD=${WP_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${WP_ROOT_PASSWORD}
+    volumes:
+      - ./data/db/wp:/var/lib/mysql
+    networks:
+      - net-wp-db
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${WP_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  # --- ZABBIX ---
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-6.4-latest
+    container_name: zabbix-web
+    environment:
+      - VIRTUAL_HOST=${ZABBIX_DOMAIN}
+      - LETSENCRYPT_HOST=${ZABBIX_DOMAIN}
+      - LETSENCRYPT_EMAIL=${MY_EMAIL}
+      - VIRTUAL_PORT=8080
+      - ZBX_SERVER_HOST=${ZBX_SERVER_HOST}
+      - DB_SERVER_HOST=${ZBX_DB_HOST}
+      - MYSQL_DATABASE=${ZBX_DB_NAME}
+      - MYSQL_USER=${ZBX_DB_USER}
+      - MYSQL_PASSWORD=${ZBX_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${ZBX_ROOT_PASSWORD}
+    depends_on:
+      db-zabbix:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_started
+    networks:
+      - public
+      - net-zabbix-db
+    restart: always
+
+  zabbix-server:
+    image: zabbix/zabbix-server-mysql:ubuntu-6.4-latest
+    container_name: zabbix-server
+    environment:
+      - DB_SERVER_HOST=${ZBX_DB_HOST}
+      - MYSQL_DATABASE=${ZBX_DB_NAME}
+      - MYSQL_USER=${ZBX_DB_USER}
+      - MYSQL_PASSWORD=${ZBX_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${ZBX_ROOT_PASSWORD}
+    depends_on:
+      db-zabbix:
+        condition: service_healthy
+    networks:
+      - public
+      - net-zabbix-db
+    restart: always
+
+  db-zabbix:
+    image: mysql:8.0
+    container_name: db-zabbix
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --default-authentication-plugin=mysql_native_password
+    environment:
+      - MYSQL_DATABASE=${ZBX_DB_NAME}
+      - MYSQL_USER=${ZBX_DB_USER}
+      - MYSQL_PASSWORD=${ZBX_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${ZBX_ROOT_PASSWORD}
+    volumes:
+      - ./data/db/zabbix:/var/lib/mysql
+    networks:
+      - net-zabbix-db
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${ZBX_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+networks:
+  public:
+    driver: bridge
+  net-wp-db:
+    driver: bridge
+  net-zabbix-db:
+    driver: bridge
