@@ -1,4 +1,8 @@
 services:
+  # Ce fichier repose sur des variables d'environnement (.env).
+  # Exemples: MY_EMAIL, DOZZLE_DOMAIN, N8N_DOMAIN, WORDPRESS_DOMAIN, ZABBIX_DOMAIN,
+  # WP_DB_*, ZBX_DB_*. Cela évite d'exposer des secrets en dur.
+
   # --- REVERSE PROXY ---
   proxy:
     image: nginxproxy/nginx-proxy
@@ -9,7 +13,9 @@ services:
       - "80:80"
       - "443:443"
     volumes:
+      # Lecture du socket Docker: permet d'auto-detecter les conteneurs a exposer.
       - /var/run/docker.sock:/tmp/docker.sock:ro
+      # Certificats, conf vhost et challenge ACME partages avec le companion SSL.
       - ./data/proxy/certs:/etc/nginx/certs:ro
       - ./data/proxy/vhost:/etc/nginx/vhost.d:ro
       - ./data/proxy/html:/usr/share/nginx/html:ro
@@ -23,10 +29,13 @@ services:
     container_name: nginx-proxy-acme
     environment:
       - TRUST_DOWNSTREAM_PROXY=true
+      # Nom exact du conteneur nginx-proxy que ce service doit piloter.
       - NGINX_PROXY_CONTAINER=nginx-proxy
+      # Email utilise lors de l'emission/renouvellement Let's Encrypt.
       - DEFAULT_EMAIL=${MY_EMAIL}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Doit rester en rw pour ecrire les certificats et challenges.
       - ./data/proxy/certs:/etc/nginx/certs:rw
       - ./data/proxy/vhost:/etc/nginx/vhost.d:rw
       - ./data/proxy/html:/usr/share/nginx/html:rw
@@ -42,14 +51,18 @@ services:
     image: amir20/dozzle:latest
     container_name: dozzle
     environment:
+      # Trio attendu par nginx-proxy + acme-companion pour publier en HTTPS.
       - VIRTUAL_HOST=${DOZZLE_DOMAIN}
       - LETSENCRYPT_HOST=${DOZZLE_DOMAIN}
       - LETSENCRYPT_EMAIL=${MY_EMAIL}
+      # Port interne de Dozzle cible par le reverse proxy.
       - VIRTUAL_PORT=8080
       - DOZZLE_ENABLE_ACTIONS=true
       - DOZZLE_AUTH_PROVIDER=simple
     volumes:
+      # Necessaire pour lire les logs des autres conteneurs.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Fichier d'authentification locale Dozzle.
       - ./data/dozzle/users.yml:/data/users.yml:ro
     networks:
       - public
@@ -65,6 +78,7 @@ services:
       - LETSENCRYPT_EMAIL=${MY_EMAIL}
       - VIRTUAL_PORT=5678
     volumes:
+      # Persistance des workflows, credentials et configuration n8n.
       - ./data/n8n:/home/node/.n8n
     networks:
       - public
@@ -78,14 +92,17 @@ services:
       - VIRTUAL_HOST=${WORDPRESS_DOMAIN}
       - LETSENCRYPT_HOST=${WORDPRESS_DOMAIN}
       - LETSENCRYPT_EMAIL=${MY_EMAIL}
+      # Connexion a la base WordPress (service db-wp sur reseau prive net-wp-db).
       - WORDPRESS_DB_HOST=${WP_DB_HOST}:${WP_DB_PORT}
       - WORDPRESS_DB_USER=${WP_DB_USER}
       - WORDPRESS_DB_PASSWORD=${WP_DB_PASSWORD}
       - WORDPRESS_DB_NAME=${WP_DB_NAME}
     volumes:
+      # Persistance des themes/plugins/uploads et du core WordPress.
       - ./data/wp:/var/www/html
     depends_on:
       db-wp:
+        # Attend que MySQL reponde avant de lancer WordPress.
         condition: service_healthy
     networks:
       - public
@@ -95,6 +112,7 @@ services:
   db-wp:
     image: mysql:8.0
     container_name: db-wp
+    # mysql_native_password facilite la compatibilite avec certains clients/plug-ins.
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --default-authentication-plugin=mysql_native_password
     environment:
       - MYSQL_DATABASE=${WP_DB_NAME}
@@ -102,10 +120,12 @@ services:
       - MYSQL_PASSWORD=${WP_DB_PASSWORD}
       - MYSQL_ROOT_PASSWORD=${WP_ROOT_PASSWORD}
     volumes:
+      # Donnees MySQL WordPress persistantes.
       - ./data/db/wp:/var/lib/mysql
     networks:
       - net-wp-db
     healthcheck:
+      # Verifie que MySQL accepte les connexions locales.
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${WP_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
@@ -121,6 +141,7 @@ services:
       - LETSENCRYPT_HOST=${ZABBIX_DOMAIN}
       - LETSENCRYPT_EMAIL=${MY_EMAIL}
       - VIRTUAL_PORT=8080
+      # zabbix-web se connecte au serveur zabbix et a la base MySQL.
       - ZBX_SERVER_HOST=${ZBX_SERVER_HOST}
       - DB_SERVER_HOST=${ZBX_DB_HOST}
       - MYSQL_DATABASE=${ZBX_DB_NAME}
@@ -131,6 +152,7 @@ services:
       db-zabbix:
         condition: service_healthy
       zabbix-server:
+        # Le front Zabbix demarre une fois le serveur applicatif lance.
         condition: service_started
     networks:
       - public
@@ -141,6 +163,7 @@ services:
     image: zabbix/zabbix-server-mysql:ubuntu-6.4-latest
     container_name: zabbix-server
     environment:
+      # Service applicatif Zabbix relie a MySQL.
       - DB_SERVER_HOST=${ZBX_DB_HOST}
       - MYSQL_DATABASE=${ZBX_DB_NAME}
       - MYSQL_USER=${ZBX_DB_USER}
@@ -164,6 +187,7 @@ services:
       - MYSQL_PASSWORD=${ZBX_DB_PASSWORD}
       - MYSQL_ROOT_PASSWORD=${ZBX_ROOT_PASSWORD}
     volumes:
+      # Donnees MySQL Zabbix persistantes.
       - ./data/db/zabbix:/var/lib/mysql
     networks:
       - net-zabbix-db
@@ -175,9 +199,13 @@ services:
     restart: always
 
 networks:
+  # Reseau public: expose les services web au reverse proxy.
   public:
     driver: bridge
+  # Reseaux prives dedies aux bases de donnees.
   net-wp-db:
     driver: bridge
+    internal: true
   net-zabbix-db:
     driver: bridge
+    internal: true
